@@ -109,21 +109,29 @@ class Box {
    * @constructor
    * @param {string} id - unique identifier for this box group ("MATH 147", "Fall 2024")
    * @param {string} type - type of box ("class", "quarter", "year")
-   * @param {left_top: [number, number], right_bottom: [number, number]} dimensions
    * @param {string} script
    */
-  constructor(id, type, dimensions, script, recalculate_containment) {
+  constructor(id, type, script, recalculate_containment) {
     /** @type {string} */
     this.id = id;
     /** @type {Map<string, {value: Object | null, listeners: Map<string, function():null>}>} */
     this.properties = new Map();
     /** @type {string} */
     this.type = type;
-    this.svgs = [new SvgBox(this.id, dimensions, () => {
-      recalculate_containment(this.id);
-    })];
+    this.svgs = [];
 
     new Function(`"use strict"; let boxes = arguments[0]; ${script}`).apply(this, [boxes])
+  }
+
+  /**
+   * Creates a new svg box for this Box id.
+   * @param {left_top: [number, number], right_bottom: [number, number]} dimensions
+   */
+  add_svg_box(dimensions) {
+    this.svgs.push(
+      new SvgBox(this.id, dimensions, () => {
+        recalculate_containment(this.id);
+      }));
   }
 
   /**
@@ -281,25 +289,26 @@ function listen_for_movement(target, container, target_object, start_callback, m
  */
 function recalculate_containment(id) {
   const box = boxes.get(id);
-  const original_parents = box.get_property("parents", () => new Map());
-  const original_children = box.get_property("children", () => new Map());
+  const original_parents = structuredClone(box.get_property("parents", () => new Map()));
+  const original_children = structuredClone(box.get_property("children", () => new Map()));
   const new_parents = new Map(), new_children = new Map();
-  for (const svg of box.svgs) {
-    // To be a parent of the changed box, a candidate must completely contain the changed box.
-    const is_parent = (p_dim) => {
-      const dim = svg.dimensions;
-      return p_dim.left_top[0] < dim.left_top[0] && p_dim.left_top[1] < dim.left_top[1] && p_dim.right_bottom[0] > dim.right_bottom[0] && p_dim.right_bottom[1] > dim.right_bottom[1];
+  for (const [candidate_id, candidate_box] of boxes) {
+    // Don't self compare.
+    if (candidate_id == id) {
+      continue;
     }
-    // And vice versa.
-    const is_child = (c_dim) => {
-      const dim = svg.dimensions;
-      return c_dim.left_top[0] > dim.left_top[0] && c_dim.left_top[1] > dim.left_top[1] && c_dim.right_bottom[0] < dim.right_bottom[0] && c_dim.right_bottom[1] < dim.right_bottom[1];
-    }
-    for (const [candidate_id, candidate_box] of boxes) {
-      if (candidate_id == id) {
-        continue;
+    let parent_count = 0, child_count = 0;
+    for (const svg of box.svgs) {
+      // To be a parent of the changed box, a candidate must completely contain the changed box.
+      const is_parent = (p_dim) => {
+        const dim = svg.dimensions;
+        return p_dim.left_top[0] < dim.left_top[0] && p_dim.left_top[1] < dim.left_top[1] && p_dim.right_bottom[0] > dim.right_bottom[0] && p_dim.right_bottom[1] > dim.right_bottom[1];
       }
-      let parent_count = 0, child_count = 0;
+      // And vice versa.
+      const is_child = (c_dim) => {
+        const dim = svg.dimensions;
+        return c_dim.left_top[0] > dim.left_top[0] && c_dim.left_top[1] > dim.left_top[1] && c_dim.right_bottom[0] < dim.right_bottom[0] && c_dim.right_bottom[1] < dim.right_bottom[1];
+      }
       for (const svg of candidate_box.svgs) {
         if (is_parent(svg.dimensions)) {
           parent_count += 1;
@@ -308,12 +317,12 @@ function recalculate_containment(id) {
           child_count += 1;
         }
       }
-      if ((original_parents.get(candidate_id) ?? 0) != parent_count) {
-        new_parents.set(candidate_id, parent_count);
-      }
-      if ((original_children.get(candidate_id) ?? 0) != child_count) {
-        new_children.set(candidate_id, child_count);
-      }
+    }
+    if ((original_parents.get(candidate_id) ?? 0) != parent_count) {
+      new_parents.set(candidate_id, parent_count);
+    }
+    if ((original_children.get(candidate_id) ?? 0) != child_count) {
+      new_children.set(candidate_id, child_count);
     }
   }
 
@@ -348,7 +357,7 @@ function recalculate_containment(id) {
           })
           console.log(`${id} includes ${relative_id} in its ${field} with count ${new_count}`);
           // Only if this is a new parent/child should we call the handlers.
-          if (original.get(relative_id) ?? 0 == 0) {
+          if ((original.get(relative_id) ?? 0) == 0) {
             if (relative_field == "parents") {
               box.on_child_enter(relative_id);
               relative.on_enter_parent(id);
@@ -371,11 +380,21 @@ function recalculate_containment(id) {
 const container = document.querySelector(".display");
 let svg_translation = [0, 0];
 let svg_scale = 1.0;
+{
+  // If zoom and pan are saved, apply them.
+  const saved = JSON.parse(localStorage.getItem("svg-viewBox"));
+  if (saved) {
+    svg_translation = saved.translation;
+    svg_scale = saved.scale;
+  }
+}
 const update_svg_transform = () => {
   const left_top = [-100 * svg_scale - svg_translation[0], -100 * svg_scale - svg_translation[1]];
   let viewBox = `${left_top[0]} ${left_top[1]} ${200 * svg_scale} ${200 * svg_scale}`
   container.setAttribute("viewBox", viewBox);
+  localStorage.setItem("svg-viewBox", JSON.stringify({ translation: svg_translation, scale: svg_scale }));
 };
+update_svg_transform();
 listen_for_movement(container, container, null, _ => { }, (_, delta) => {
   svg_translation[0] += delta[0];
   svg_translation[1] += delta[1];
@@ -388,40 +407,6 @@ container.addEventListener("wheel", e => {
   }
 }, { passive: true });
 
-/** 
- * @param {Map<string, Box>} boxes 
- * @param {Box} object
- */
-function fall_2024_on_child(boxes, object, enter_not_exit) {
-  return (arg) => {
-    /** @type {string} */
-    const child_id = arg;
-    /** @type {string} */
-    const child = boxes.get(child_id);
-    console.log(`child ${child_id} entering=${enter_not_exit} fall 2024`);
-    if (child.type == "class") {
-      if (enter_not_exit) {
-        let previous_contribution = child.get_property("units", () => 0);
-        console.log("subscribing");
-        object.set_property("total-units", () => 0, total => total.value += previous_contribution);
-        child.subscribe("units", object.id, () => {
-          // Only add the delta since the last update.
-          object.set_property("total-units", () => 0, (total) => {
-            total.value += child.get_property("units") - previous_contribution;
-          });
-          previous_contribution = child.get_property("units");
-          console.log("child's units", child_id, child.get_property("units"));
-        });
-      } else {
-        object.set_property("total-units", () => 0, total => {
-          total.value -= child.get_property("units");
-        })
-        console.log("unsubscribing");
-        child.unsubscribe("units", object.id)
-      }
-    }
-  }
-}
 
 const handlers = {
   units: {
@@ -451,7 +436,6 @@ const handlers = {
 const subscribers = {
   error: class_object => {
     class_object.subscribe("errors", "error-color", () => {
-      console.log("checking", class_object.get_property("errors").keys());
       if (class_object.get_property("errors").size > 0) {
         class_object.set_color("red");
       } else {
@@ -485,10 +469,33 @@ const subscribers = {
   }
 }
 
+// Every few seconds, save the current box positions.
+setInterval(() => {
+  let position_data = {};
+  for (const [id, box] of boxes) {
+    position_data[id] = [...box.svgs.map(s => s.dimensions)];
+  }
+  localStorage.setItem("individual-box-dimensions", JSON.stringify(position_data));
+}, 5000);
+
+let previous_position_data = {};
+if (localStorage.getItem("individual-box-dimensions")) {
+  try {
+    previous_position_data = JSON.parse(localStorage.getItem("individual-box-dimensions"));
+  } catch {
+    console.error("Invalid individual-box-dimensions in local storage. Please clear");
+  }
+}
 const add_box = (box) => {
   boxes.set(box.id, box);
   recalculate_containment(box.id);
 }
+const with_old_dim = (id, dimensions) => {
+  if (previous_position_data[id] && previous_position_data[id].length > 0) {
+    return previous_position_data[id].pop();
+  }
+  return dimensions;
+};
 
 const quarter_dimensions = {
   left_top: [0, 0],
@@ -502,10 +509,7 @@ for (const [year_i, year] of ["2022-23", "2023-24", "2024-25", "2025-26"].entrie
     const qd = quarter_dimensions;
     const left = qd.left_top[0] + quarter_i * (qd.spacing[0] + qd.width);
     const top = qd.left_top[1] + year_i * (qd.spacing[1] + qd.height);
-    const box = new Box(quarter + " " + year, "quarter", {
-      left_top: [left, top],
-      right_bottom: [left + qd.width, top + qd.height],
-    }, `
+    const box = new Box(quarter + " " + year, "quarter", `
       this.subscribe("total-units", () => 0, () => {
         const units = this.get_property("total-units", () => 0);
         this.set_text("Units: " + units.toString());
@@ -526,6 +530,10 @@ for (const [year_i, year] of ["2022-23", "2023-24", "2024-25", "2025-26"].entrie
         handlers.units.exit(this)(child_id);
       };
     `)
+    box.add_svg_box(with_old_dim(box.id, {
+      left_top: [left, top],
+      right_bottom: [left + qd.width, top + qd.height],
+    }));
     add_box(box);
   }
 }
@@ -535,19 +543,16 @@ function math_147_init(object) {
   let math_147 = object;
   math_147.set_property("units", () => 0, u => { u.value = 12 });
 }
-const math_147 = new Box("MATH 147", "class", { left_top: [-20, 20], right_bottom: [50, 50] }, `
-    math_147_init(this);
-  `, recalculate_containment)
-boxes.set(math_147.id, math_147);
-const math_148 = new Box("MATH 148", "class", { left_top: [-50, 30], right_bottom: [20, 50] }, `
-    math_147_init(this);
-  `, recalculate_containment)
-boxes.set(math_148.id, math_148);
+const math_147 = new Box("MATH 147", "class", ` math_147_init(this); `, recalculate_containment);
+math_147.add_svg_box(with_old_dim(math_147.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
+math_147.add_svg_box(with_old_dim(math_147.id, { left_top: [-0, 20], right_bottom: [50, 50] }));
+add_box(math_147);
+const math_148 = new Box("MATH 148", "class", ` math_147_init(this); `, recalculate_containment);
+math_148.add_svg_box(with_old_dim(math_148.id, { left_top: [-50, 30], right_bottom: [20, 50] }));
+add_box(math_148);
 
 
 // recalculate_containment(fall.id);
-recalculate_containment(math_148.id);
-recalculate_containment(math_147.id);
 // fall.on_child_enter(math_147);
 // math_147.on_enter_parent(fall);
 // setInterval(() => {
