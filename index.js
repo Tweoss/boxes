@@ -57,62 +57,14 @@ class SvgBox {
     update_sizes(this.dimensions);
 
     const container = document.querySelector(".display");
-    const sample_point = container.createSVGPoint();
-
-    const get_mouse_delta = e => {
-      sample_point.x = e.clientX - e.movementX;
-      sample_point.y = e.clientY - e.movementY;
-      const start = sample_point.matrixTransform(container.getScreenCTM().inverse());
-      sample_point.x = e.clientX;
-      sample_point.y = e.clientY;
-      const end = sample_point.matrixTransform(container.getScreenCTM().inverse());
-      return [end.x - start.x, end.y - start.y];
-    };
-    // move_callback is passed the mouse delta.
-    const listen_for_movement = (target, start_callback, move_callback, end_callback) => {
-      let dragging = false;
-      let touch_position = [0, 0];
-      const set_dragging = value => e => {
-        e.preventDefault();
-        dragging = value;
-        if (dragging) {
-          start_callback();
-          // Save the start touch position.
-          if (e.changedTouches) {
-            touch_position = [e.changedTouches[0].clientX, e.changedTouches[0].clientY];
-          }
-        } else {
-          end_callback();
-        }
-      };
-      const move = e => {
-        if (!dragging) {
-          return;
-        }
-        e.preventDefault();
-        if (e.changedTouches) {
-          [e.clientX, e.clientY] = [e.changedTouches[0].clientX, e.changedTouches[0].clientY];
-          [e.movementX, e.movementY] = [e.clientX - touch_position[0], e.clientY - touch_position[1]];
-          touch_position = [e.clientX, e.clientY];
-        }
-        const delta = get_mouse_delta(e);
-        move_callback.bind(this)(delta);
-      };
-      target.addEventListener("touchstart", set_dragging(true), { passive: false });
-      target.addEventListener("mousedown", set_dragging(true));
-      container.addEventListener("touchmove", move.bind(this), { passive: false });
-      container.addEventListener("mousemove", move.bind(this));
-      document.addEventListener("touchend", set_dragging(false));
-      document.addEventListener("mouseup", set_dragging(false));
-    };
 
     // Drag box via text.
-    listen_for_movement(text, _ => text.selectSubString(0, -1), delta => {
-      this.dimensions.left_top[0] += delta[0];
-      this.dimensions.left_top[1] += delta[1];
-      this.dimensions.right_bottom[0] += delta[0];
-      this.dimensions.right_bottom[1] += delta[1];
-      update_sizes(this.dimensions);
+    listen_for_movement(text,  container, this, _ => text.selectSubString(0, -1), (object, delta) => {
+      object.dimensions.left_top[0] += delta[0];
+      object.dimensions.left_top[1] += delta[1];
+      object.dimensions.right_bottom[0] += delta[0];
+      object.dimensions.right_bottom[1] += delta[1];
+      update_sizes(object.dimensions);
       onmove();
     }, _ => text.selectSubString(0, 0));
 
@@ -123,16 +75,16 @@ class SvgBox {
         cy: point == "left_top" ? 0 : "100%",
         r: "2%",
       });
-      listen_for_movement(circle, _ => { }, delta => {
-        this.dimensions[point][0] += delta[0];
-        this.dimensions[point][1] += delta[1];
+      listen_for_movement(circle, container, this, _ => { }, (object, delta) => {
+        object.dimensions[point][0] += delta[0];
+        object.dimensions[point][1] += delta[1];
         // Ensure the rectangle doesn't become degenerate
         if (point == "left_top") {
-          this.dimensions[point][0] = Math.min(this.dimensions[point][0], this.dimensions["right_bottom"][0] - 1);
-          this.dimensions[point][1] = Math.min(this.dimensions[point][1], this.dimensions["right_bottom"][1] - 1);
+          object.dimensions[point][0] = Math.min(object.dimensions[point][0], object.dimensions["right_bottom"][0] - 1);
+          object.dimensions[point][1] = Math.min(object.dimensions[point][1], object.dimensions["right_bottom"][1] - 1);
         } else {
-          this.dimensions[point][0] = Math.max(this.dimensions[point][0], this.dimensions["left_top"][0] + 1);
-          this.dimensions[point][1] = Math.max(this.dimensions[point][1], this.dimensions["left_top"][1] + 1);
+          object.dimensions[point][0] = Math.max(object.dimensions[point][0], object.dimensions["left_top"][0] + 1);
+          object.dimensions[point][1] = Math.max(object.dimensions[point][1], object.dimensions["left_top"][1] + 1);
         }
         update_sizes(this.dimensions);
         onmove();
@@ -237,6 +189,64 @@ class Box {
   on_exit_parent(_parent) { }
 }
 
+/**
+ * Handles mouse or touch actions.
+ * @param {HTMLElement} target
+ * @param {SVGElement} container
+ * @param {Object} target_object 
+ * @param {function(Object):null} start_callback - passed the target object
+ * @param {function(Object, [number, number]):null} move_callback - is passed the movement delta in local coordinates
+ * @param {function(Object):null} end_callback - passed the target object
+ */
+function listen_for_movement(target, container, target_object, start_callback, move_callback, end_callback) {
+  const sample_point = container.createSVGPoint();
+  const get_mouse_delta = e => {
+    sample_point.x = e.clientX - e.movementX;
+    sample_point.y = e.clientY - e.movementY;
+    const start = sample_point.matrixTransform(container.getScreenCTM().inverse());
+    sample_point.x = e.clientX;
+    sample_point.y = e.clientY;
+    const end = sample_point.matrixTransform(container.getScreenCTM().inverse());
+    return [end.x - start.x, end.y - start.y];
+  };
+
+  let dragging = false;
+  let touch_position = [0, 0];
+  const set_dragging = value => e => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = value;
+    if (dragging) {
+      start_callback(target_object);
+      // Save the start touch position.
+      if (e.changedTouches) {
+        touch_position = [e.changedTouches[0].clientX, e.changedTouches[0].clientY];
+      }
+    } else {
+      end_callback(target_object);
+    }
+  };
+  const move = e => {
+    if (!dragging) {
+      return;
+    }
+    e.preventDefault();
+    // Calculate the touch delta from the previous position.
+    if (e.changedTouches) {
+      [e.clientX, e.clientY] = [e.changedTouches[0].clientX, e.changedTouches[0].clientY];
+      [e.movementX, e.movementY] = [e.clientX - touch_position[0], e.clientY - touch_position[1]];
+      touch_position = [e.clientX, e.clientY];
+    }
+    const delta = get_mouse_delta(e);
+    move_callback(target_object, delta);
+  };
+  target.addEventListener("touchstart", set_dragging(true), { passive: false });
+  target.addEventListener("mousedown", set_dragging(true));
+  container.addEventListener("touchmove", move, { passive: false });
+  container.addEventListener("mousemove", move);
+  document.addEventListener("touchend", set_dragging(false));
+  document.addEventListener("mouseup", set_dragging(false));
+};
 /** 
  * Recalculates the parent and child boxes for the updated box.
  * @param {string} id 
@@ -328,6 +338,28 @@ function recalculate_containment(id) {
   update(original_children, new_children, "children");
 }
 
+
+// Handle zooming and panning.
+const container = document.querySelector(".display");
+let svg_translation = [0, 0];
+let svg_scale = 1.0;
+const update_svg_transform = () => {
+  const left_top = [-100 * svg_scale - svg_translation[0], -100 * svg_scale - svg_translation[1]];
+  let viewBox = `${left_top[0]} ${left_top[1]} ${200 * svg_scale} ${200 * svg_scale}`
+  container.setAttribute("viewBox", viewBox);
+};
+listen_for_movement(container, container, null, _ => {}, (_, delta) => {
+  svg_translation[0] += delta[0];
+  svg_translation[1] += delta[1];
+  update_svg_transform();
+}, _ => {});
+container.addEventListener("wheel", e => {
+  if (e.metaKey) {
+    svg_scale *= Math.exp(e.deltaY / 100);
+    update_svg_transform();
+  }
+}, {passive: true});
+
 /** 
  * @param {Map<string, Box>} boxes 
  * @param {Box} object
@@ -383,19 +415,17 @@ const math_147 = new Box("MATH 147", "class", { left_top: [-20, 20], right_botto
     math_147_init(this);
   `, recalculate_containment)
 boxes.set(math_147.id, math_147);
-const math_148 = new Box("MATH 148", "class", { left_top: [-20, 20], right_bottom: [50, 50] }, `
+const math_148 = new Box("MATH 148", "class", { left_top: [-50, 30], right_bottom: [20, 50] }, `
     math_147_init(this);
   `, recalculate_containment)
 boxes.set(math_148.id, math_148);
-
 
 
 recalculate_containment(fall.id);
 // fall.on_child_enter(math_147);
 // math_147.on_enter_parent(fall);
 // setInterval(() => {
-// math_147.set_property("units", () => 0, u => { u.value += 1 });
-  
+// math_147.set_property("units", () => 0, u => { u.value += 1 })
 // }, 1000);
 
 // recalculate_containment(math_147.id);

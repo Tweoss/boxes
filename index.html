@@ -13,8 +13,10 @@
 
     .wrapper {
       display: grid;
-      grid-template-rows: 1fr 1fr;
+      grid-template-rows: 2fr 1fr;
+      overflow: hidden;
       height: 100%;
+      border: black 1pt;
     }
 
     .display {
@@ -32,7 +34,8 @@
 
 <body>
   <div class="wrapper">
-    <svg class="display" xmlns="http://www.w3.org/2000/svg" viewbox="-100 -100 200 200">
+    <svg class="display" xmlns="http://www.w3.org/2000/svg" viewbox="-100 -100 200 200"
+      style="outline: 2pt solid gray;">
     </svg>
     <div class="info">
     </div>
