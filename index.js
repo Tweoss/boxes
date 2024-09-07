@@ -36,9 +36,10 @@ class SvgBox {
     const svg = create("svg", {});
     svg.style = "overflow: visible;";
     const rect = create("rect", { x: 0, y: 0, width: "100%", height: "100%", fill: "none", stroke: "black", "stroke-width": "1%" });
-    const text = create("text", { "alignment-baseline": "hanging", x: "50%", y: "5%", "text-anchor": "middle", "font-size": "50%" });
+    this.rect = rect;
+    const text = create("text", { "alignment-baseline": "hanging", x: "50%", y: "2pt", "text-anchor": "middle", "font-size": "50%" });
     const id_text = create("tspan", { x: "50%", dy: ".6em" });
-    this.info_text = create("tspan", { x: "50%", dy: "1.2em", "font-size": "80%" })
+    this.info_text = create("tspan", { x: "50%", dy: "1.2em", "font-size": "60%" })
     id_text.textContent = id;
     text.appendChild(id_text);
     text.appendChild(this.info_text);
@@ -59,14 +60,14 @@ class SvgBox {
     const container = document.querySelector(".display");
 
     // Drag box via text.
-    listen_for_movement(text,  container, this, _ => text.selectSubString(0, -1), (object, delta) => {
+    listen_for_movement(text, container, this, _ => id_text.selectSubString(0, -1), (object, delta) => {
       object.dimensions.left_top[0] += delta[0];
       object.dimensions.left_top[1] += delta[1];
       object.dimensions.right_bottom[0] += delta[0];
       object.dimensions.right_bottom[1] += delta[1];
       update_sizes(object.dimensions);
       onmove();
-    }, _ => text.selectSubString(0, 0));
+    }, _ => id_text.selectSubString(0, 0));
 
     // Adjust bounds via handles.
     for (const point of ["left_top", "right_bottom"]) {
@@ -97,6 +98,9 @@ class SvgBox {
 
   set_text(text) {
     this.info_text.textContent = text;
+  }
+  set_color(color) {
+    this.rect.setAttribute("fill", color);
   }
 }
 
@@ -130,7 +134,10 @@ class Box {
    */
   set_property(prop, initializer, update) {
     if (!this.properties.has(prop)) {
-      this.properties.set(prop, { value: initializer(), listeners: new Map() });
+      this.properties.set(prop, { listeners: new Map() });
+    }
+    if (this.properties.get(prop).value == null) {
+      this.properties.get(prop).value = initializer();
     }
     let property = this.properties.get(prop);
     update(property);
@@ -142,10 +149,18 @@ class Box {
   /**
    * Get a property.
    * @param {string} prop - the property
+   * @param {function():Object} initializer - the default value if the property doesn't exist
+   * @param {boolean} save - whether or not to save the initalizer output in the property
    */
-  get_property(prop, initializer = () => { throw new Error(`Tried to access uninitialized property: ${prop}`) }) {
+  get_property(prop, initializer = () => { throw new Error(`Tried to access uninitialized property: ${prop}`) }, save = true) {
     if (!this.properties.has(prop)) {
-      this.properties.set(prop, { value: initializer(), listeners: new Map() });
+      this.properties.set(prop, { listeners: new Map() });
+    }
+    if (this.properties.get(prop).value == null) {
+      if (!save) {
+        return initializer();
+      }
+      this.properties.get(prop).value = initializer();
     }
     return this.properties.get(prop).value;
   }
@@ -160,7 +175,7 @@ class Box {
   subscribe(prop, label, callback) {
     const property = this.properties.get(prop);
     if (!property) {
-      this.properties.set(prop, { value: null, listeners: new Map() });
+      this.properties.set(prop, { listeners: new Map() });
     }
     this.properties.get(prop).listeners.set(label, callback);
   }
@@ -179,8 +194,21 @@ class Box {
     }
   }
 
+  set_error(label, error) {
+    this.set_property("errors", () => new Map(), errors => {
+      errors.value.set(label, error);
+    })
+  }
+  clear_error(label) {
+    this.set_property("errors", () => new Map(), errors => {
+      errors.value.delete(label);
+    })
+  }
   set_text(text) {
     this.svgs.forEach(svg => svg.set_text(text));
+  }
+  set_color(color) {
+    this.svgs.forEach(svg => svg.set_color(color));
   }
 
   on_child_enter(_child) { }
@@ -348,17 +376,17 @@ const update_svg_transform = () => {
   let viewBox = `${left_top[0]} ${left_top[1]} ${200 * svg_scale} ${200 * svg_scale}`
   container.setAttribute("viewBox", viewBox);
 };
-listen_for_movement(container, container, null, _ => {}, (_, delta) => {
+listen_for_movement(container, container, null, _ => { }, (_, delta) => {
   svg_translation[0] += delta[0];
   svg_translation[1] += delta[1];
   update_svg_transform();
-}, _ => {});
+}, _ => { });
 container.addEventListener("wheel", e => {
   if (e.metaKey) {
     svg_scale *= Math.exp(e.deltaY / 100);
     update_svg_transform();
   }
-}, {passive: true});
+}, { passive: true });
 
 /** 
  * @param {Map<string, Box>} boxes 
@@ -395,21 +423,117 @@ function fall_2024_on_child(boxes, object, enter_not_exit) {
   }
 }
 
-const fall = new Box("fall 2024", "quarter", { left_top: [-10, 0], right_bottom: [100, 80] }, `
-    this.set_text("Units: 0");
-    this.subscribe("total-units", () => 0, () => {
-      const units = this.get_property("total-units", () => 0);
-      this.set_text("Units: " + units.toString());
+const handlers = {
+  units: {
+    enter: class_object => child_id => {
+      const child = boxes.get(child_id);
+      let previous_contribution = child.get_property("units");
+      class_object.set_property("total-units", () => 0, total => total.value += previous_contribution);
+      child.subscribe("units", class_object.id, () => {
+        // Only add the delta since the last update.
+        class_object.set_property("total-units", () => 0, (total) => {
+          total.value += child.get_property("units") - previous_contribution;
+        });
+        previous_contribution = child.get_property("units");
+      });
+    },
+    exit: class_object => child_id => {
+      const child = boxes.get(child_id);
+      class_object.set_property("total-units", () => 0, total => {
+        total.value -= child.get_property("units");
+      })
+      child.unsubscribe("units", class_object.id)
+    }
+  },
+};
+
+/** @type {{text: function(Box):null}} */
+const subscribers = {
+  error: class_object => {
+    class_object.subscribe("errors", "error-color", () => {
+      console.log("checking", class_object.get_property("errors").keys());
+      if (class_object.get_property("errors").size > 0) {
+        class_object.set_color("red");
+      } else {
+        class_object.set_color("none");
+      }
     });
-    this.on_child_enter = fall_2024_on_child(boxes, this, true);
-    this.on_child_exit = fall_2024_on_child(boxes, this, false);
-  `, recalculate_containment);
-boxes.set("fall 2024", fall);
+  },
+  text: class_object => {
+    const set_text = () => {
+      let output = "";
+      let units = class_object.get_property("total-units", () => null, false);
+      if (units != null) {
+        output += `Units: ${units}, `;
+      }
+      let errors = class_object.get_property("errors", () => null, false);
+      if (errors != null && errors.size > 0) {
+        output += "Errors: {"
+        for (const [label, error] of errors) {
+          output += `${label}: ${error}`;
+        }
+        output += "}, ";
+      }
+      if (output.endsWith(', ')) {
+        output = output.substring(0, output.length - 2);
+      }
+      class_object.set_text(output);
+    }
+    set_text();
+    class_object.subscribe("errors", "display-text", set_text);
+    class_object.subscribe("total-units", "display-text", set_text);
+  }
+}
+
+const add_box = (box) => {
+  boxes.set(box.id, box);
+  recalculate_containment(box.id);
+}
+
+const quarter_dimensions = {
+  left_top: [0, 0],
+  spacing: [10, 5],
+  width: 80,
+  height: 160,
+}
+
+for (const [year_i, year] of ["2022-23", "2023-24", "2024-25", "2025-26"].entries()) {
+  for (const [quarter_i, quarter] of ["Fall", "Winter", "Spring"].entries()) {
+    const qd = quarter_dimensions;
+    const left = qd.left_top[0] + quarter_i * (qd.spacing[0] + qd.width);
+    const top = qd.left_top[1] + year_i * (qd.spacing[1] + qd.height);
+    const box = new Box(quarter + " " + year, "quarter", {
+      left_top: [left, top],
+      right_bottom: [left + qd.width, top + qd.height],
+    }, `
+      this.subscribe("total-units", () => 0, () => {
+        const units = this.get_property("total-units", () => 0);
+        this.set_text("Units: " + units.toString());
+        if (units > 22) {
+          console.log("over");
+          this.set_error("units", ">22 units");
+        } else {
+          this.clear_error("units");
+        }
+      });
+      this.set_property("total-units", () => 0, _ => {});
+      subscribers.error(this);
+      subscribers.text(this);
+      this.on_child_enter = (child_id) => {
+        handlers.units.enter(this)(child_id);
+      };
+      this.on_child_exit = (child_id) => {
+        handlers.units.exit(this)(child_id);
+      };
+    `)
+    add_box(box);
+  }
+}
 
 function math_147_init(object) {
   /** @type {Box} */
   let math_147 = object;
-  math_147.set_property("units", () => 0, u => { u.value = 3 });
+  math_147.set_property("units", () => 0, u => { u.value = 12 });
 }
 const math_147 = new Box("MATH 147", "class", { left_top: [-20, 20], right_bottom: [50, 50] }, `
     math_147_init(this);
@@ -421,7 +545,9 @@ const math_148 = new Box("MATH 148", "class", { left_top: [-50, 30], right_botto
 boxes.set(math_148.id, math_148);
 
 
-recalculate_containment(fall.id);
+// recalculate_containment(fall.id);
+recalculate_containment(math_148.id);
+recalculate_containment(math_147.id);
 // fall.on_child_enter(math_147);
 // math_147.on_enter_parent(fall);
 // setInterval(() => {
