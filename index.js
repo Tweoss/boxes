@@ -335,6 +335,9 @@ function recalculate_containment(id) {
   const update = (original, updated, field) => {
     // For parents of this box, this box will be their "child" and vice versa. Thus, the relative field.
     const relative_field = field == "parents" ? "children" : "parents";
+    if (updated.size == 0) {
+      return;
+    }
 
     box.set_property(field, () => new Map(), v => {
       for (const [relative_id, new_count] of updated.entries()) {
