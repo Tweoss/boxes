@@ -444,7 +444,7 @@ const subscribers = {
   error: class_object => {
     class_object.subscribe("errors", "error-color", () => {
       if (class_object.get_property("errors").size > 0) {
-        class_object.set_color("red");
+        class_object.set_color("#F00000A0");
       } else {
         class_object.set_color("none");
       }
