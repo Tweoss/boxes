@@ -37,6 +37,7 @@ class SvgBox {
     svg.style = "overflow: visible;";
     const rect = create("rect", { x: 0, y: 0, width: "100%", height: "100%", fill: "none", stroke: "black", "stroke-width": "1%" });
     this.rect = rect;
+    rect.style = "pointer-events: none;"
     const text = create("text", { "alignment-baseline": "hanging", x: "50%", y: "2pt", "text-anchor": "middle", "font-size": "50%" });
     const id_text = create("tspan", { x: "50%", dy: ".6em" });
     this.info_text = create("tspan", { x: "50%", dy: "1.2em", "font-size": "60%" })
@@ -254,12 +255,14 @@ function listen_for_movement(target, container, target_object, start_callback, m
     e.stopPropagation();
     dragging = value;
     if (dragging) {
+      container.style.cursor = "grab";
       start_callback(target_object);
       // Save the start touch position.
       if (e.changedTouches) {
         touch_position = [e.changedTouches[0].clientX, e.changedTouches[0].clientY];
       }
     } else {
+      container.style.cursor = "unset";
       end_callback(target_object);
     }
   };
