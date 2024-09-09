@@ -106,6 +106,10 @@ class SvgBox {
   }
 }
 
+/** 
+ * The structure of the "parents" and "children" properties is a map from the 
+ * parent or child id to the count of box pairs with that relation.
+ */
 class Box {
   /**
    * @constructor
@@ -151,7 +155,7 @@ class Box {
     }
     let property = this.properties.get(prop);
     update(property);
-    for (const [_label, listener] of property.listeners) {
+    for (const [_label, listener] of property.listeners.entries()) {
       listener();
     }
   }
@@ -437,9 +441,38 @@ const handlers = {
       child.unsubscribe("units", class_object.id)
     }
   },
+  count_once: class_object => {
+    class_object.on_child_enter = child_id => {
+      const child = boxes.get(child_id);
+      console.log(child);
+      if (child.get_property("units", () => null) == null) {
+        return;
+      }
+      child.subscribe("counted-by", class_object.id, () => {
+        const set = child.get_property("counted-by", () => new Set());
+        if (set.size > 1) {
+          console.log(set);
+          console.log(class_object);
+          class_object.set_error("count_once" + child_id, `counted ${set.size} ${child_id}'s'`);
+        } else {
+          class_object.clear_error("count_once" + child_id);
+        }
+      });
+      child.set_property("counted-by", () => new Set(), set => {
+        set.value.add(class_object.id);
+      });
+    };
+    class_object.on_child_exit = child_id => {
+      const child = boxes.get(child_id);
+      class_object.clear_error("count_once" + child_id);
+      child.set_property("counted-by", () => new Set(), set => {
+        set.value.delete(class_object.id);
+      });
+      child.unsubscribe("counted-by", class_object.id);
+    };
+  }
 };
 
-/** @type {{text: function(Box):null}} */
 const subscribers = {
   error: class_object => {
     class_object.subscribe("errors", "error-color", () => {
@@ -452,6 +485,7 @@ const subscribers = {
   },
   text: class_object => {
     const set_text = () => {
+      console.log("resetting text");
       let output = "";
       let units = class_object.get_property("total-units", () => null, false);
       if (units != null) {
@@ -459,11 +493,9 @@ const subscribers = {
       }
       let errors = class_object.get_property("errors", () => null, false);
       if (errors != null && errors.size > 0) {
-        output += "Errors: {"
-        for (const [label, error] of errors) {
-          output += `${label}: ${error}`;
-        }
-        output += "}, ";
+        output += "Errors: ["
+        output += [...errors.entries().map(([_label, error]) => error)].join(", ");
+        output += "], ";
       }
       if (output.endsWith(', ')) {
         output = output.substring(0, output.length - 2);
@@ -473,7 +505,56 @@ const subscribers = {
     set_text();
     class_object.subscribe("errors", "display-text", set_text);
     class_object.subscribe("total-units", "display-text", set_text);
-  }
+  },
+  unit_text: class_object => {
+      const units = class_object.get_property("total-units", () => 0);
+      class_object.set_text("Units: " + units.toString());
+  },
+  unit_max: unit_limit => class_object => {
+    class_object.subscribe("total-units", "unit-max", () => {
+      const units = class_object.get_property("total-units", () => 0);
+      if (units > unit_limit) {
+        class_object.set_error("units-max", `>${unit_limit} units`);
+      } else {
+        class_object.clear_error("units-max");
+      }
+    });
+  },
+  unit_min: unit_min => class_object => {
+    class_object.subscribe("total-units", "unit-min", () => {
+      const units = class_object.get_property("total-units", () => 0);
+      if (units < unit_min) {
+        class_object.set_error("units-min", `<${unit_min} units`);
+      } else {
+        class_object.clear_error("units-min");
+      }
+    });
+  },
+  taken_at_most_once: class_object => {
+    class_object.subscribe("parents", "taken-once", () => {
+      const parents = class_object.get_property("parents", () => new Map());
+      // console.log()
+      const taken_count = [...parents.keys().filter(p => boxes.get(p).type == "quarter" || p == TRANSFER)].length;
+      if (taken_count > 1) {
+        class_object.set_error("already-taken", `${class_object.id} already taken`);
+      } else {
+        class_object.clear_error("already-taken");
+      }
+    });
+  },
+  require_children: required_children => class_object => {
+    let prev_missing = "";
+    const update = () => {
+      const children = class_object.get_property("children", () => new Map());
+      let missing = required_children.filter(id => !children.has(id)).join(", ");
+      if (missing != "" && prev_missing != missing) {
+        cs_core.set_error("required", `Missing ${missing}`);
+        prev_missing = missing;
+      }
+    };
+    update();
+    cs_core.subscribe("children", "required-classes", update);
+  },
 }
 
 // Every few seconds, save the current box positions.
@@ -511,23 +592,13 @@ const quarter_dimensions = {
   height: 160,
 }
 
-for (const [year_i, year] of ["2022-23", "2023-24", "2024-25", "2025-26"].entries()) {
-  for (const [quarter_i, quarter] of ["Fall", "Winter", "Spring"].entries()) {
+for (const [year_i, year] of YEARS.entries()) {
+  for (const [quarter_i, quarter] of QUARTERS.entries()) {
     const qd = quarter_dimensions;
     const left = qd.left_top[0] + quarter_i * (qd.spacing[0] + qd.width);
     const top = qd.left_top[1] + year_i * (qd.spacing[1] + qd.height);
     const box = new Box(quarter + " " + year, "quarter", `
-      this.subscribe("total-units", () => 0, () => {
-        const units = this.get_property("total-units", () => 0);
-        this.set_text("Units: " + units.toString());
-        if (units > 22) {
-          console.log("over");
-          this.set_error("units", ">22 units");
-        } else {
-          this.clear_error("units");
-        }
-      });
-      this.set_property("total-units", () => 0, _ => {});
+      subscribers.unit_max(22)(this);
       subscribers.error(this);
       subscribers.text(this);
       this.on_child_enter = (child_id) => {
@@ -536,6 +607,7 @@ for (const [year_i, year] of ["2022-23", "2023-24", "2024-25", "2025-26"].entrie
       this.on_child_exit = (child_id) => {
         handlers.units.exit(this)(child_id);
       };
+      this.set_property("total-units", () => 0, _ => {});
     `)
     box.add_svg_box(with_old_dim(box.id, {
       left_top: [left, top],
@@ -545,10 +617,28 @@ for (const [year_i, year] of ["2022-23", "2023-24", "2024-25", "2025-26"].entrie
   }
 }
 
+const transferred = new Box(TRANSFER, "transfer", `
+  subscribers.unit_max(45)(this);
+  subscribers.error(this);
+  subscribers.text(this);
+  this.on_child_enter = (child_id) => {
+    handlers.units.enter(this)(child_id);
+  };
+  this.on_child_exit = (child_id) => {
+    handlers.units.exit(this)(child_id);
+  };
+`, recalculate_containment);
+transferred.add_svg_box(with_old_dim(transferred.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
+transferred.set_property("total-units", () => 0, _ => { });
+add_box(transferred);
+
 function math_147_init(object) {
   /** @type {Box} */
   let math_147 = object;
-  math_147.set_property("units", () => 0, u => { u.value = 12 });
+  math_147.set_property("units", () => 0, u => { u.value = 24 });
+  subscribers.error(math_147);
+  subscribers.text(math_147);
+  subscribers.taken_at_most_once(math_147);
 }
 const math_147 = new Box("MATH 147", "class", ` math_147_init(this); `, recalculate_containment);
 math_147.add_svg_box(with_old_dim(math_147.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
@@ -559,16 +649,48 @@ math_148.add_svg_box(with_old_dim(math_148.id, { left_top: [-50, 30], right_bott
 add_box(math_148);
 
 
-// recalculate_containment(fall.id);
-// fall.on_child_enter(math_147);
-// math_147.on_enter_parent(fall);
-// setInterval(() => {
-// math_147.set_property("units", () => 0, u => { u.value += 1 })
-// }, 1000);
+function track_init(obj) {
+  /** @type {Box} */
+  const track = obj;
+}
+const cs_track = new Box("CS Undergrad Systems", "track", ``, recalculate_containment);
+cs_track.add_svg_box(with_old_dim(cs_track.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
+add_box(cs_track);
 
-// recalculate_containment(math_147.id);
+const math_track = new Box("Math Undergrad", "track", ``, recalculate_containment);
+math_track.add_svg_box(with_old_dim(math_track.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
+add_box(math_track);
 
-// if box newly contained in another box: 
-// call the parent box's handler
-// a handler should add itself to the child's callbacks for the properties that the
-// handler depends on
+function track_req_init(obj) {
+  /** @type {Box} */
+  const track = obj;
+  handlers.count_once(track);
+  track.on_child_enter = (id) => {
+    handlers.count_once.enter(track)(id);
+    handlers.units.enter(track)(id);
+  };
+  track.on_child_exit = (id) => {
+    handlers.count_once.exit(track)(id);
+    handlers.units.exit(track)(id);
+  };
+}
+// TODO
+// const cs_math = new Box("CS Mathematics Req", "track-req", `track_req_init(this)`, recalculate_containment);
+
+const cs_core = new Box("Systems Core", "track-req", `track_req_init(this)`, recalculate_containment);
+cs_core.add_svg_box(with_old_dim(cs_core.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
+subscribers.error(cs_core);
+subscribers.text(cs_core);
+subscribers.unit_min(12)(cs_core);
+subscribers.require_children(["CS 107E", "CS 111", "CS 161"])(cs_core);
+add_box(cs_core);
+const cs_tis = new Box("Technology in Society", "track-req", `track_req_init(this)`, recalculate_containment);
+cs_tis.add_svg_box(with_old_dim(cs_tis.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
+subscribers.error(cs_tis);
+subscribers.text(cs_tis);
+add_box(cs_tis);
+
+// need to check that 
+// - units are counted only once among CS UNDERGRAD (any track), MATH UNDERGRAD, CS GRAD (any track)
+// - when counting in grad, use grad units
+// - each class is only taken once (among the quarters, transfer)
