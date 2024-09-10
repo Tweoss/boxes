@@ -108,7 +108,10 @@ class SvgBox {
 
 /** 
  * The structure of the "parents" and "children" properties is a map from the 
- * parent or child id to the count of box pairs with that relation.
+ * parent or child id to the count of box pairs with that relation. Subscribers to
+ * either field are passed the delta: a map from the updated parent or child id to
+ * the new count. If the count is 0, then the parent or child relation has been
+ * removed.
  */
 class Box {
   /**
@@ -145,8 +148,9 @@ class Box {
    * @param {string} prop - the property
    * @param {function():Object} initializer - the callback to call if the property does not yet exist
    * @param {function({value: Object}):null} update - a modification callback
+   * @param {Object} delta - if desired, a delta to pass to listeners
    */
-  set_property(prop, initializer, update) {
+  set_property(prop, initializer, update, delta = null) {
     if (!this.properties.has(prop)) {
       this.properties.set(prop, { listeners: new Map() });
     }
@@ -156,25 +160,22 @@ class Box {
     let property = this.properties.get(prop);
     update(property);
     for (const [_label, listener] of property.listeners.entries()) {
-      listener();
+      listener(delta);
     }
   }
 
   /**
    * Get a property.
    * @param {string} prop - the property
-   * @param {function():Object} initializer - the default value if the property doesn't exist
+   * @param {function():Object} default_value - the default value if the property doesn't exist
    * @param {boolean} save - whether or not to save the initalizer output in the property
    */
-  get_property(prop, initializer = () => { throw new Error(`Tried to access uninitialized property: ${prop}`) }, save = true) {
+  get_property(prop, default_value = () => { throw new Error(`Tried to access uninitialized property: ${prop}`) }) {
     if (!this.properties.has(prop)) {
       this.properties.set(prop, { listeners: new Map() });
     }
     if (this.properties.get(prop).value == null) {
-      if (!save) {
-        return initializer();
-      }
-      this.properties.get(prop).value = initializer();
+      return default_value();
     }
     return this.properties.get(prop).value;
   }
@@ -184,7 +185,7 @@ class Box {
    * If there exists a callback with this label, then that callback is overwritten.
    * @param {string} prop - the property
    * @param {string} label
-   * @param {function():null} callback
+   * @param {function(Object|null):null} callback - may be passed a delta if the set_property provides one
    */
   subscribe(prop, label, callback) {
     const property = this.properties.get(prop);
@@ -343,6 +344,10 @@ function recalculate_containment(id) {
       return;
     }
 
+    let delta = new Map(updated.entries().map(([id, new_c]) => {
+      return [id, new_c - (original.get(id) ?? 0)];
+    }));
+
     box.set_property(field, () => new Map(), v => {
       for (const [relative_id, new_count] of updated.entries()) {
         const relative = boxes.get(relative_id);
@@ -352,7 +357,7 @@ function recalculate_containment(id) {
           v.value.delete(relative_id);
           relative.set_property(relative_field, () => new Map(), field => {
             field.value.delete(id);
-          });
+          }, new Map([[id, 0 - original.get(relative_id)]]));
           console.log(`${id} no longer includes ${relative_id} in its ${field}`);
           if (relative_field == "parents") {
             box.on_child_exit(relative_id);
@@ -365,7 +370,7 @@ function recalculate_containment(id) {
           v.value.set(relative_id, new_count);
           relative.set_property(relative_field, () => new Map(), field => {
             field.value.set(id, new_count);
-          })
+          }, new Map([[id, new_count - (original.get(relative_id) ?? 0)]]));
           console.log(`${id} includes ${relative_id} in its ${field} with count ${new_count}`);
           // Only if this is a new parent/child should we call the handlers.
           if ((original.get(relative_id) ?? 0) == 0) {
@@ -379,8 +384,7 @@ function recalculate_containment(id) {
           }
         }
       }
-
-    })
+    }, delta)
   };
   update(original_parents, new_parents, "parents");
   update(original_children, new_children, "children");
@@ -420,56 +424,85 @@ container.addEventListener("wheel", e => {
 
 
 const handlers = {
-  units: {
-    enter: class_object => child_id => {
+  units: class_object => {
+    const add_check = (child_id, count) => {
       const child = boxes.get(child_id);
-      let previous_contribution = child.get_property("units");
-      class_object.set_property("total-units", () => 0, total => total.value += previous_contribution);
-      child.subscribe("units", class_object.id, () => {
-        // Only add the delta since the last update.
+      const units = child.get_property("units", () => null);
+      if (units == null) {
+        return;
+      }
+      // No longer child.
+      if (!child.get_property("parents").has(class_object.id)) {
+        class_object.set_property("total-units", () => 0, total => {
+          total.value -= units;
+        })
+        child.unsubscribe("units", class_object.id)
+      } else if (count > 0 && child.get_property("parents").get(class_object.id) == count) {
+        // Just incremented AND was previously zero.
         class_object.set_property("total-units", () => 0, (total) => {
-          total.value += child.get_property("units") - previous_contribution;
+          total.value += child.get_property("units");
         });
-        previous_contribution = child.get_property("units");
-      });
-    },
-    exit: class_object => child_id => {
-      const child = boxes.get(child_id);
-      class_object.set_property("total-units", () => 0, total => {
-        total.value -= child.get_property("units");
-      })
-      child.unsubscribe("units", class_object.id)
+
+        child.subscribe("units", class_object.id, (delta) => {
+          // Only add the delta since the last update.
+          class_object.set_property("total-units", () => 0, (total) => {
+            total.value += delta;
+          });
+        });
+      }
+    };
+    class_object.subscribe("children", "total-units", updated => {
+      console.log(class_object.id, updated);
+      for (const [child_id, count] of updated) {
+        add_check(child_id, count);
+      }
+    });
+    let total_units = 0;
+    for (const [child_id, count] of class_object.get_property("children", () => new Map())) {
+      total_units += boxes.get(child_id).get_property("units", () => 0);
     }
+    class_object.set_property("total-units", () => 0, (total) => {
+      total.value = total_units;
+    });
   },
   count_once: class_object => {
-    class_object.on_child_enter = child_id => {
+    const add_check = (child_id, count) => {
       const child = boxes.get(child_id);
-      console.log(child);
       if (child.get_property("units", () => null) == null) {
         return;
       }
-      child.subscribe("counted-by", class_object.id, () => {
-        const set = child.get_property("counted-by", () => new Set());
-        if (set.size > 1) {
-          console.log(set);
-          console.log(class_object);
-          class_object.set_error("count_once" + child_id, `counted ${set.size} ${child_id}'s'`);
-        } else {
-          class_object.clear_error("count_once" + child_id);
-        }
-      });
-      child.set_property("counted-by", () => new Set(), set => {
-        set.value.add(class_object.id);
-      });
+      // No longer child.
+      if (!child.get_property("parents").has(class_object.id)) {
+        child.set_property("counted-by", () => new Set(), set => {
+          set.value.delete(class_object.id);
+        });
+        child.unsubscribe("counted-by", class_object.id);
+      } else if (count > 0 && child.get_property("parents").get(class_object.id) == count) {
+        const check = () => {
+          const set = child.get_property("counted-by", () => new Set());
+          if (set.size > 1) {
+            console.log(set);
+            console.log(class_object);
+            class_object.set_error("count_once" + child_id, `counted ${set.size} ${child_id}'s'`);
+          } else {
+            class_object.clear_error("count_once" + child_id);
+          }
+        };
+        child.subscribe("counted-by", class_object.id, check);
+        child.set_property("counted-by", () => new Set(), set => {
+          set.value.add(class_object.id);
+        });
+      }
     };
-    class_object.on_child_exit = child_id => {
-      const child = boxes.get(child_id);
-      class_object.clear_error("count_once" + child_id);
-      child.set_property("counted-by", () => new Set(), set => {
-        set.value.delete(class_object.id);
-      });
-      child.unsubscribe("counted-by", class_object.id);
-    };
+    class_object.subscribe("children", "count-children-once", updated => {
+      console.log(updated);
+      for (const [child_id, count] of updated) {
+        add_check(child_id, count);
+      }
+    });
+    for (const [child_id, count] of class_object.get_property("children", () => new Map())) {
+      add_check(child_id, count);
+    }
   }
 };
 
@@ -485,7 +518,6 @@ const subscribers = {
   },
   text: class_object => {
     const set_text = () => {
-      console.log("resetting text");
       let output = "";
       let units = class_object.get_property("total-units", () => null, false);
       if (units != null) {
@@ -507,8 +539,8 @@ const subscribers = {
     class_object.subscribe("total-units", "display-text", set_text);
   },
   unit_text: class_object => {
-      const units = class_object.get_property("total-units", () => 0);
-      class_object.set_text("Units: " + units.toString());
+    const units = class_object.get_property("total-units", () => 0);
+    class_object.set_text("Units: " + units.toString());
   },
   unit_max: unit_limit => class_object => {
     class_object.subscribe("total-units", "unit-max", () => {
@@ -557,15 +589,6 @@ const subscribers = {
   },
 }
 
-// Every few seconds, save the current box positions.
-setInterval(() => {
-  let position_data = {};
-  for (const [id, box] of boxes) {
-    position_data[id] = [...box.svgs.map(s => s.dimensions)];
-  }
-  localStorage.setItem("individual-box-dimensions", JSON.stringify(position_data));
-}, 5000);
-
 let previous_position_data = {};
 if (localStorage.getItem("individual-box-dimensions")) {
   try {
@@ -601,12 +624,7 @@ for (const [year_i, year] of YEARS.entries()) {
       subscribers.unit_max(22)(this);
       subscribers.error(this);
       subscribers.text(this);
-      this.on_child_enter = (child_id) => {
-        handlers.units.enter(this)(child_id);
-      };
-      this.on_child_exit = (child_id) => {
-        handlers.units.exit(this)(child_id);
-      };
+      handlers.units(this);
       this.set_property("total-units", () => 0, _ => {});
     `)
     box.add_svg_box(with_old_dim(box.id, {
@@ -621,12 +639,7 @@ const transferred = new Box(TRANSFER, "transfer", `
   subscribers.unit_max(45)(this);
   subscribers.error(this);
   subscribers.text(this);
-  this.on_child_enter = (child_id) => {
-    handlers.units.enter(this)(child_id);
-  };
-  this.on_child_exit = (child_id) => {
-    handlers.units.exit(this)(child_id);
-  };
+  handlers.units(this);
 `, recalculate_containment);
 transferred.add_svg_box(with_old_dim(transferred.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
 transferred.set_property("total-units", () => 0, _ => { });
@@ -635,7 +648,7 @@ add_box(transferred);
 function math_147_init(object) {
   /** @type {Box} */
   let math_147 = object;
-  math_147.set_property("units", () => 0, u => { u.value = 24 });
+  math_147.set_property("units", () => 0, u => { u.value = 24 }, 24 - math_147.get_property("units", () => 0));
   subscribers.error(math_147);
   subscribers.text(math_147);
   subscribers.taken_at_most_once(math_147);
@@ -649,10 +662,6 @@ math_148.add_svg_box(with_old_dim(math_148.id, { left_top: [-50, 30], right_bott
 add_box(math_148);
 
 
-function track_init(obj) {
-  /** @type {Box} */
-  const track = obj;
-}
 const cs_track = new Box("CS Undergrad Systems", "track", ``, recalculate_containment);
 cs_track.add_svg_box(with_old_dim(cs_track.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
 add_box(cs_track);
@@ -665,20 +674,13 @@ function track_req_init(obj) {
   /** @type {Box} */
   const track = obj;
   handlers.count_once(track);
-  track.on_child_enter = (id) => {
-    handlers.count_once.enter(track)(id);
-    handlers.units.enter(track)(id);
-  };
-  track.on_child_exit = (id) => {
-    handlers.count_once.exit(track)(id);
-    handlers.units.exit(track)(id);
-  };
+  handlers.units(track);
 }
 // TODO
 // const cs_math = new Box("CS Mathematics Req", "track-req", `track_req_init(this)`, recalculate_containment);
 
 const cs_core = new Box("Systems Core", "track-req", `track_req_init(this)`, recalculate_containment);
-cs_core.add_svg_box(with_old_dim(cs_core.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
+cs_core.add_svg_box(with_old_dim(cs_core.id, { left_top: [550, 425], right_bottom: [850, 550] }));
 subscribers.error(cs_core);
 subscribers.text(cs_core);
 subscribers.unit_min(12)(cs_core);
@@ -689,6 +691,15 @@ cs_tis.add_svg_box(with_old_dim(cs_tis.id, { left_top: [-20, 20], right_bottom: 
 subscribers.error(cs_tis);
 subscribers.text(cs_tis);
 add_box(cs_tis);
+
+// Every few seconds, save the current box positions.
+setInterval(() => {
+  let position_data = {};
+  for (const [id, box] of boxes) {
+    position_data[id] = [...box.svgs.map(s => s.dimensions)];
+  }
+  localStorage.setItem("individual-box-dimensions", JSON.stringify(position_data));
+}, 5000);
 
 // need to check that 
 // - units are counted only once among CS UNDERGRAD (any track), MATH UNDERGRAD, CS GRAD (any track)
