@@ -225,11 +225,6 @@ class Box {
   set_color(color) {
     this.svgs.forEach(svg => svg.set_color(color));
   }
-
-  on_child_enter(_child) { }
-  on_child_exit(_child) { }
-  on_enter_parent(_parent) { }
-  on_exit_parent(_parent) { }
 }
 
 /**
@@ -359,29 +354,12 @@ function recalculate_containment(id) {
             field.value.delete(id);
           }, new Map([[id, 0 - original.get(relative_id)]]));
           console.log(`${id} no longer includes ${relative_id} in its ${field}`);
-          if (relative_field == "parents") {
-            box.on_child_exit(relative_id);
-            relative.on_exit_parent(id);
-          } else {
-            relative.on_child_exit(id);
-            box.on_exit_parent(relative_id);
-          }
         } else {
           v.value.set(relative_id, new_count);
           relative.set_property(relative_field, () => new Map(), field => {
             field.value.set(id, new_count);
           }, new Map([[id, new_count - (original.get(relative_id) ?? 0)]]));
           console.log(`${id} includes ${relative_id} in its ${field} with count ${new_count}`);
-          // Only if this is a new parent/child should we call the handlers.
-          if ((original.get(relative_id) ?? 0) == 0) {
-            if (relative_field == "parents") {
-              box.on_child_enter(relative_id);
-              relative.on_enter_parent(id);
-            } else {
-              relative.on_child_enter(id);
-              box.on_enter_parent(relative_id);
-            }
-          }
         }
       }
     }, delta)
@@ -422,8 +400,143 @@ container.addEventListener("wheel", e => {
   }
 }, { passive: true });
 
-
-const handlers = {
+const subscribers = {
+  error: class_object => {
+    class_object.subscribe("errors", "error-color", () => {
+      if (class_object.get_property("errors").size > 0) {
+        class_object.set_color("#F00000A0");
+      } else {
+        class_object.set_color("none");
+      }
+    });
+  },
+  text: class_object => {
+    const set_text = () => {
+      let output = "";
+      let units = class_object.get_property("total-units", () => null, false);
+      if (units != null) {
+        output += `Units: ${units}, `;
+      }
+      let errors = class_object.get_property("errors", () => null, false);
+      if (errors != null && errors.size > 0) {
+        output += "Errors: ["
+        output += [...errors.entries().map(([_label, error]) => error)].join(", ");
+        output += "], ";
+      }
+      if (output.endsWith(', ')) {
+        output = output.substring(0, output.length - 2);
+      }
+      class_object.set_text(output);
+    }
+    set_text();
+    class_object.subscribe("errors", "display-text", set_text);
+    class_object.subscribe("total-units", "display-text", set_text);
+  },
+  unit_text: class_object => {
+    const units = class_object.get_property("total-units", () => 0);
+    class_object.set_text("Units: " + units.toString());
+  },
+  unit_max: unit_limit => class_object => {
+    class_object.subscribe("total-units", "unit-max", () => {
+      const units = class_object.get_property("total-units", () => 0);
+      if (units > unit_limit) {
+        class_object.set_error("units-max", `>${unit_limit} units`);
+      } else {
+        class_object.clear_error("units-max");
+      }
+    });
+  },
+  unit_min: unit_min => class_object => {
+    class_object.subscribe("total-units", "unit-min", () => {
+      const units = class_object.get_property("total-units", () => 0);
+      if (units < unit_min) {
+        class_object.set_error("units-min", `<${unit_min} units`);
+      } else {
+        class_object.clear_error("units-min");
+      }
+    });
+  },
+  taken_at_most_once: class_object => {
+    class_object.subscribe("parents", "taken-once", () => {
+      const parents = class_object.get_property("parents", () => new Map());
+      // console.log()
+      const taken_count = [...parents.keys().filter(p => boxes.get(p).type == "quarter" || p == TRANSFER)].length;
+      if (taken_count > 1) {
+        class_object.set_error("already-taken", `${class_object.id} already taken`);
+      } else {
+        class_object.clear_error("already-taken");
+      }
+    });
+  },
+  require_children: required_children => class_object => {
+    let prev_missing = "";
+    const update = () => {
+      const children = class_object.get_property("children", () => new Map());
+      let missing = required_children.filter(id => !children.has(id)).join(", ");
+      if (prev_missing != missing) {
+        if (missing != "") {
+          class_object.set_error("required", `Missing (${missing})`);
+        } else {
+          class_object.clear_error("required");
+        }
+        prev_missing = missing;
+      }
+    };
+    update();
+    class_object.subscribe("children", "required-classes", update);
+  },
+  // Require all children with type "class" to be scheduled
+  children_scheduled: class_object => {
+    let missing = new Map();
+    const update_error = () => {
+      if (missing.size > 0) {
+        class_object.set_error("not-scheduled", `(${[...missing.keys()].join(", ")}) not scheduled`);
+      } else {
+        class_object.clear_error("not-scheduled");
+      }
+    };
+    const update_check = (child_id, count) => {
+      const child = boxes.get(child_id);
+      if (child.type != "class") {
+        return;
+      }
+      const check = () => {
+        if ([...child.get_property("parents").keys().filter(p => {
+          return (YEARS.findIndex(y => p.endsWith(y)) != -1) && (QUARTERS.findIndex(q => p.startsWith(q)) != -1)
+        })].length == 0) {
+          if (missing.has(child_id)) {
+            return;
+          }
+          missing.set(child_id);
+        } else {
+          if (!missing.has(child_id)) {
+            return;
+          }
+          missing.delete(child_id);
+        }
+        update_error();
+      };
+      // No longer child.
+      if (!child.get_property("parents").has(class_object.id)) {
+        missing.delete(child_id);
+        update_error();
+        // class_object.clear_error("not-scheduled" + child_id);
+        child.unsubscribe("parents", class_object.id)
+      } else if (count > 0 && child.get_property("parents").get(class_object.id) == count) {
+        // Just incremented AND was previously zero.
+        child.subscribe("parents", class_object.id, check);
+        check();
+      }
+    };
+    class_object.subscribe("children", "not-scheduled", updated => {
+      for (const [child_id, count] of updated) {
+        update_check(child_id, count);
+      }
+    });
+    for (const [child_id, count] of class_object.get_property("children", () => new Map())) {
+      update_check(child_id, count);
+    }
+  },
   units: class_object => {
     const add_check = (child_id, count) => {
       const child = boxes.get(child_id);
@@ -503,89 +616,6 @@ const handlers = {
     for (const [child_id, count] of class_object.get_property("children", () => new Map())) {
       add_check(child_id, count);
     }
-  }
-};
-
-const subscribers = {
-  error: class_object => {
-    class_object.subscribe("errors", "error-color", () => {
-      if (class_object.get_property("errors").size > 0) {
-        class_object.set_color("#F00000A0");
-      } else {
-        class_object.set_color("none");
-      }
-    });
-  },
-  text: class_object => {
-    const set_text = () => {
-      let output = "";
-      let units = class_object.get_property("total-units", () => null, false);
-      if (units != null) {
-        output += `Units: ${units}, `;
-      }
-      let errors = class_object.get_property("errors", () => null, false);
-      if (errors != null && errors.size > 0) {
-        output += "Errors: ["
-        output += [...errors.entries().map(([_label, error]) => error)].join(", ");
-        output += "], ";
-      }
-      if (output.endsWith(', ')) {
-        output = output.substring(0, output.length - 2);
-      }
-      class_object.set_text(output);
-    }
-    set_text();
-    class_object.subscribe("errors", "display-text", set_text);
-    class_object.subscribe("total-units", "display-text", set_text);
-  },
-  unit_text: class_object => {
-    const units = class_object.get_property("total-units", () => 0);
-    class_object.set_text("Units: " + units.toString());
-  },
-  unit_max: unit_limit => class_object => {
-    class_object.subscribe("total-units", "unit-max", () => {
-      const units = class_object.get_property("total-units", () => 0);
-      if (units > unit_limit) {
-        class_object.set_error("units-max", `>${unit_limit} units`);
-      } else {
-        class_object.clear_error("units-max");
-      }
-    });
-  },
-  unit_min: unit_min => class_object => {
-    class_object.subscribe("total-units", "unit-min", () => {
-      const units = class_object.get_property("total-units", () => 0);
-      if (units < unit_min) {
-        class_object.set_error("units-min", `<${unit_min} units`);
-      } else {
-        class_object.clear_error("units-min");
-      }
-    });
-  },
-  taken_at_most_once: class_object => {
-    class_object.subscribe("parents", "taken-once", () => {
-      const parents = class_object.get_property("parents", () => new Map());
-      // console.log()
-      const taken_count = [...parents.keys().filter(p => boxes.get(p).type == "quarter" || p == TRANSFER)].length;
-      if (taken_count > 1) {
-        class_object.set_error("already-taken", `${class_object.id} already taken`);
-      } else {
-        class_object.clear_error("already-taken");
-      }
-    });
-  },
-  require_children: required_children => class_object => {
-    let prev_missing = "";
-    const update = () => {
-      const children = class_object.get_property("children", () => new Map());
-      let missing = required_children.filter(id => !children.has(id)).join(", ");
-      if (missing != "" && prev_missing != missing) {
-        cs_core.set_error("required", `Missing ${missing}`);
-        prev_missing = missing;
-      }
-    };
-    update();
-    cs_core.subscribe("children", "required-classes", update);
   },
 }
 
@@ -623,8 +653,7 @@ for (const [year_i, year] of YEARS.entries()) {
     const box = new Box(quarter + " " + year, "quarter", `
       subscribers.unit_max(22)(this);
       subscribers.error(this);
-      subscribers.text(this);
-      handlers.units(this);
+      subscribers.units(this);
       this.set_property("total-units", () => 0, _ => {});
     `)
     box.add_svg_box(with_old_dim(box.id, {
@@ -632,18 +661,19 @@ for (const [year_i, year] of YEARS.entries()) {
       right_bottom: [left + qd.width, top + qd.height],
     }));
     add_box(box);
+    // Calling after adding a box means there is text on those boxes.
+    subscribers.text(box);
   }
 }
 
 const transferred = new Box(TRANSFER, "transfer", `
   subscribers.unit_max(45)(this);
   subscribers.error(this);
-  subscribers.text(this);
-  handlers.units(this);
+  subscribers.units(this);
 `, recalculate_containment);
 transferred.add_svg_box(with_old_dim(transferred.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
-transferred.set_property("total-units", () => 0, _ => { });
 add_box(transferred);
+subscribers.text(transferred);
 
 function math_147_init(object) {
   /** @type {Box} */
@@ -673,22 +703,29 @@ add_box(math_track);
 function track_req_init(obj) {
   /** @type {Box} */
   const track = obj;
-  handlers.count_once(track);
-  handlers.units(track);
+  subscribers.units(track);
+  subscribers.error(track);
 }
-// TODO
-// const cs_math = new Box("CS Mathematics Req", "track-req", `track_req_init(this)`, recalculate_containment);
+const cs_math = new Box("CS Mathematics Req", "track-req", `track_req_init(this)`, recalculate_containment);
+cs_math.add_svg_box(with_old_dim(cs_math.id, { left_top: [550, 425], right_bottom: [850, 550] }));
+add_box(cs_math);
+subscribers.text(cs_math);
+subscribers.require_children(["MATH 19", "MATH 20", "MATH 21", "CS 154", "CS 109"])(cs_math);
+subscribers.unit_min(26)(cs_math);
+subscribers.children_scheduled(cs_math);
 
 const cs_core = new Box("Systems Core", "track-req", `track_req_init(this)`, recalculate_containment);
 cs_core.add_svg_box(with_old_dim(cs_core.id, { left_top: [550, 425], right_bottom: [850, 550] }));
 subscribers.error(cs_core);
 subscribers.text(cs_core);
+subscribers.count_once(cs_core);
 subscribers.unit_min(12)(cs_core);
 subscribers.require_children(["CS 107E", "CS 111", "CS 161"])(cs_core);
 add_box(cs_core);
 const cs_tis = new Box("Technology in Society", "track-req", `track_req_init(this)`, recalculate_containment);
 cs_tis.add_svg_box(with_old_dim(cs_tis.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
 subscribers.error(cs_tis);
+subscribers.count_once(cs_tis);
 subscribers.text(cs_tis);
 add_box(cs_tis);
 
