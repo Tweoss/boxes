@@ -401,225 +401,6 @@ container.addEventListener("wheel", e => {
   }
 }, { passive: true });
 
-const subscribers = {
-  error: class_object => {
-    class_object.subscribe("errors", "error-color", () => {
-      if (class_object.get_property("errors").size > 0) {
-        class_object.set_color("#F00000A0");
-      } else {
-        class_object.set_color("none");
-      }
-    });
-  },
-  text: class_object => {
-    const set_text = () => {
-      let output = "";
-      let units = class_object.get_property("total-units", () => null, false);
-      if (units != null) {
-        output += `Units: ${units}, `;
-      }
-      let errors = class_object.get_property("errors", () => null, false);
-      if (errors != null && errors.size > 0) {
-        output += "Errors: ["
-        output += [...errors.entries().map(([_label, error]) => error)].join(", ");
-        output += "], ";
-      }
-      if (output.endsWith(', ')) {
-        output = output.substring(0, output.length - 2);
-      }
-      class_object.set_text(output);
-    }
-    set_text();
-    class_object.subscribe("errors", "display-text", set_text);
-    class_object.subscribe("total-units", "display-text", set_text);
-  },
-  unit_text: class_object => {
-    const units = class_object.get_property("total-units", () => 0);
-    class_object.set_text("Units: " + units.toString());
-  },
-  unit_max: unit_limit => class_object => {
-    class_object.subscribe("total-units", "unit-max", () => {
-      const units = class_object.get_property("total-units", () => 0);
-      if (units > unit_limit) {
-        class_object.set_error("units-max", `>${unit_limit} units`);
-      } else {
-        class_object.clear_error("units-max");
-      }
-    });
-  },
-  unit_min: unit_min => class_object => {
-    class_object.subscribe("total-units", "unit-min", () => {
-      const units = class_object.get_property("total-units", () => 0);
-      if (units < unit_min) {
-        class_object.set_error("units-min", `<${unit_min} units`);
-      } else {
-        class_object.clear_error("units-min");
-      }
-    });
-  },
-  taken_at_most_once: class_object => {
-    class_object.subscribe("parents", "taken-once", () => {
-      const parents = class_object.get_property("parents", () => new Map());
-      // console.log()
-      const taken_count = [...parents.keys().filter(p => boxes.get(p).type == "quarter" || p == TRANSFER)].length;
-      if (taken_count > 1) {
-        class_object.set_error("already-taken", `${class_object.id} already taken`);
-      } else {
-        class_object.clear_error("already-taken");
-      }
-    });
-  },
-  require_children: required_children => class_object => {
-    let prev_missing = "";
-    const update = () => {
-      const children = class_object.get_property("children", () => new Map());
-      let missing = required_children.filter(id => !children.has(id)).join(", ");
-      if (prev_missing != missing) {
-        if (missing != "") {
-          class_object.set_error("required", `Missing (${missing})`);
-        } else {
-          class_object.clear_error("required");
-        }
-        prev_missing = missing;
-      }
-    };
-    update();
-    class_object.subscribe("children", "required-classes", update);
-  },
-  // Require all children with type "class" to be scheduled
-  children_scheduled: class_object => {
-    let missing = new Map();
-    const update_error = () => {
-      if (missing.size > 0) {
-        class_object.set_error("not-scheduled", `(${[...missing.keys()].join(", ")}) not scheduled`);
-      } else {
-        class_object.clear_error("not-scheduled");
-      }
-    };
-    const update_check = (child_id, count) => {
-      const child = boxes.get(child_id);
-      if (child.type != "class") {
-        return;
-      }
-      const check = () => {
-        if ([...child.get_property("parents").keys().filter(p => {
-          return (YEARS.findIndex(y => p.endsWith(y)) != -1) && (QUARTERS.findIndex(q => p.startsWith(q)) != -1)
-        })].length == 0) {
-          if (missing.has(child_id)) {
-            return;
-          }
-          missing.set(child_id);
-        } else {
-          if (!missing.has(child_id)) {
-            return;
-          }
-          missing.delete(child_id);
-        }
-        update_error();
-      };
-      // No longer child.
-      if (!child.get_property("parents").has(class_object.id)) {
-        missing.delete(child_id);
-        update_error();
-        // class_object.clear_error("not-scheduled" + child_id);
-        child.unsubscribe("parents", class_object.id)
-      } else if (count > 0 && child.get_property("parents").get(class_object.id) == count) {
-        // Just incremented AND was previously zero.
-        child.subscribe("parents", class_object.id, check);
-        check();
-      }
-    };
-    class_object.subscribe("children", "not-scheduled", updated => {
-      for (const [child_id, count] of updated) {
-        update_check(child_id, count);
-      }
-    });
-    for (const [child_id, count] of class_object.get_property("children", () => new Map())) {
-      update_check(child_id, count);
-    }
-  },
-  units: class_object => {
-    const add_check = (child_id, count) => {
-      const child = boxes.get(child_id);
-      const units = child.get_property("units", () => null);
-      if (units == null) {
-        return;
-      }
-      // No longer child.
-      if (!child.get_property("parents").has(class_object.id)) {
-        class_object.set_property("total-units", () => 0, total => {
-          total.value -= units;
-        })
-        child.unsubscribe("units", class_object.id)
-      } else if (count > 0 && child.get_property("parents").get(class_object.id) == count) {
-        // Just incremented AND was previously zero.
-        class_object.set_property("total-units", () => 0, (total) => {
-          total.value += child.get_property("units");
-        });
-
-        child.subscribe("units", class_object.id, (delta) => {
-          // Only add the delta since the last update.
-          class_object.set_property("total-units", () => 0, (total) => {
-            total.value += delta;
-          });
-        });
-      }
-    };
-    class_object.subscribe("children", "total-units", updated => {
-      console.log(class_object.id, updated);
-      for (const [child_id, count] of updated) {
-        add_check(child_id, count);
-      }
-    });
-    let total_units = 0;
-    for (const [child_id, count] of class_object.get_property("children", () => new Map())) {
-      total_units += boxes.get(child_id).get_property("units", () => 0);
-    }
-    class_object.set_property("total-units", () => 0, (total) => {
-      total.value = total_units;
-    });
-  },
-  count_once: class_object => {
-    const add_check = (child_id, count) => {
-      const child = boxes.get(child_id);
-      if (child.get_property("units", () => null) == null) {
-        return;
-      }
-      // No longer child.
-      if (!child.get_property("parents").has(class_object.id)) {
-        child.set_property("counted-by", () => new Set(), set => {
-          set.value.delete(class_object.id);
-        });
-        child.unsubscribe("counted-by", class_object.id);
-      } else if (count > 0 && child.get_property("parents").get(class_object.id) == count) {
-        const check = () => {
-          const set = child.get_property("counted-by", () => new Set());
-          if (set.size > 1) {
-            console.log(set);
-            console.log(class_object);
-            class_object.set_error("count_once" + child_id, `counted ${set.size} ${child_id}'s'`);
-          } else {
-            class_object.clear_error("count_once" + child_id);
-          }
-        };
-        child.subscribe("counted-by", class_object.id, check);
-        child.set_property("counted-by", () => new Set(), set => {
-          set.value.add(class_object.id);
-        });
-      }
-    };
-    class_object.subscribe("children", "count-children-once", updated => {
-      console.log(updated);
-      for (const [child_id, count] of updated) {
-        add_check(child_id, count);
-      }
-    });
-    for (const [child_id, count] of class_object.get_property("children", () => new Map())) {
-      add_check(child_id, count);
-    }
-  },
-}
-
 let previous_position_data = {};
 if (localStorage.getItem("individual-box-dimensions")) {
   try {
@@ -628,118 +409,31 @@ if (localStorage.getItem("individual-box-dimensions")) {
     console.error("Invalid individual-box-dimensions in local storage. Please clear");
   }
 }
-const add_box = (box) => {
-  boxes.set(box.id, box);
-  recalculate_containment(box.id);
-}
 const with_old_dim = (id, dimensions) => {
   if (previous_position_data[id] && previous_position_data[id].length > 0) {
     return previous_position_data[id].pop();
   }
   return dimensions;
 };
-
-const quarter_dimensions = {
-  left_top: [0, 0],
-  spacing: [10, 5],
-  width: 80,
-  height: 160,
-}
-
-for (const [year_i, year] of YEARS.entries()) {
-  for (const [quarter_i, quarter] of QUARTERS.entries()) {
-    const qd = quarter_dimensions;
-    const left = qd.left_top[0] + quarter_i * (qd.spacing[0] + qd.width);
-    const top = qd.left_top[1] + year_i * (qd.spacing[1] + qd.height);
-    const box = new Box(quarter + " " + year, "quarter", `
-      subscribers.unit_max(22)(this);
-      subscribers.error(this);
-      subscribers.units(this);
-      this.set_property("total-units", () => 0, _ => {});
-    `)
-    box.add_svg_box(with_old_dim(box.id, {
-      left_top: [left, top],
-      right_bottom: [left + qd.width, top + qd.height],
-    }));
-    add_box(box);
-    // Calling after adding a box means there is text on those boxes.
-    subscribers.text(box);
+const add_box = (box, svg_dimensions_list) => {
+  boxes.set(box.id, box);
+  for (const dimensions of svg_dimensions_list) {
+    box.add_svg_box(with_old_dim(box.id, dimensions));
   }
+  recalculate_containment(box.id);
 }
-
-const transferred = new Box(TRANSFER, "transfer", `
-  subscribers.unit_max(45)(this);
-  subscribers.error(this);
-  subscribers.units(this);
-`, recalculate_containment);
-transferred.add_svg_box(with_old_dim(transferred.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
-add_box(transferred);
-subscribers.text(transferred);
-
-function math_147_init(object) {
-  /** @type {Box} */
-  let math_147 = object;
-  math_147.set_property("units", () => 0, u => { u.value = 24 }, 24 - math_147.get_property("units", () => 0));
-  subscribers.error(math_147);
-  subscribers.text(math_147);
-  subscribers.taken_at_most_once(math_147);
-}
-const math_147 = new Box("MATH 147", "class", ` math_147_init(this); `, recalculate_containment);
-math_147.add_svg_box(with_old_dim(math_147.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
-math_147.add_svg_box(with_old_dim(math_147.id, { left_top: [-0, 20], right_bottom: [50, 50] }));
-add_box(math_147);
-const math_148 = new Box("MATH 148", "class", ` math_147_init(this); `, recalculate_containment);
-math_148.add_svg_box(with_old_dim(math_148.id, { left_top: [-50, 30], right_bottom: [20, 50] }));
-add_box(math_148);
-
-
-const cs_track = new Box("CS Undergrad Systems", "track", ``, recalculate_containment);
-cs_track.add_svg_box(with_old_dim(cs_track.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
-add_box(cs_track);
-
-const math_track = new Box("Math Undergrad", "track", ``, recalculate_containment);
-math_track.add_svg_box(with_old_dim(math_track.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
-add_box(math_track);
-
-function track_req_init(obj) {
-  /** @type {Box} */
-  const track = obj;
-  subscribers.units(track);
-  subscribers.error(track);
-}
-const cs_math = new Box("CS Mathematics Req", "track-req", `track_req_init(this)`, recalculate_containment);
-cs_math.add_svg_box(with_old_dim(cs_math.id, { left_top: [550, 425], right_bottom: [850, 550] }));
-add_box(cs_math);
-subscribers.text(cs_math);
-subscribers.require_children(["MATH 19", "MATH 20", "MATH 21", "CS 154", "CS 109"])(cs_math);
-subscribers.unit_min(26)(cs_math);
-subscribers.children_scheduled(cs_math);
-
-const cs_core = new Box("Systems Core", "track-req", `track_req_init(this)`, recalculate_containment);
-cs_core.add_svg_box(with_old_dim(cs_core.id, { left_top: [550, 425], right_bottom: [850, 550] }));
-subscribers.error(cs_core);
-subscribers.text(cs_core);
-subscribers.count_once(cs_core);
-subscribers.unit_min(12)(cs_core);
-subscribers.require_children(["CS 107E", "CS 111", "CS 161"])(cs_core);
-add_box(cs_core);
-const cs_tis = new Box("Technology in Society", "track-req", `track_req_init(this)`, recalculate_containment);
-cs_tis.add_svg_box(with_old_dim(cs_tis.id, { left_top: [-20, 20], right_bottom: [50, 50] }));
-subscribers.error(cs_tis);
-subscribers.count_once(cs_tis);
-subscribers.text(cs_tis);
-add_box(cs_tis);
 
 // Every few seconds, save the current box positions.
-setInterval(() => {
-  let position_data = {};
-  for (const [id, box] of boxes) {
-    position_data[id] = [...box.svgs.map(s => s.dimensions)];
-  }
-  localStorage.setItem("individual-box-dimensions", JSON.stringify(position_data));
-}, 5000);
+function setup_save_box_positions() {
+  setInterval(() => {
+    let position_data = {};
+    for (const [id, box] of boxes) {
+      position_data[id] = [...box.svgs.map(s => s.dimensions)];
+    }
+    localStorage.setItem("individual-box-dimensions", JSON.stringify(position_data));
+  }, 5000);
+}
 
-// need to check that 
-// - units are counted only once among CS UNDERGRAD (any track), MATH UNDERGRAD, CS GRAD (any track)
-// - when counting in grad, use grad units
-// - each class is only taken once (among the quarters, transfer)
+// TODO: 
+// - check for redundant calculations (maybe add a debugger)
+
