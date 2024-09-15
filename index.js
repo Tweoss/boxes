@@ -120,7 +120,7 @@ class Box {
    * @param {string} type - type of box ("class", "quarter", "year")
    * @param {string} script
    */
-  constructor(id, type, script, recalculate_containment) {
+  constructor(id, type, script) {
     /** @type {string} */
     this.id = id;
     /** @type {Map<string, {value: Object | null, listeners: Map<string, function():null>}>} */
