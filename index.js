@@ -50,10 +50,11 @@ class SvgBox {
     const update_sizes = (dimensions) => {
       const rect = calc_rect(dimensions);
       const viewbox_width = 100, viewbox_height = rect.height / rect.width * 100;
-      // Apply a minimum to make sure the items don't shrink beyond recognition
       const sqrt_ratio = viewbox_height / viewbox_width;
-      // const scaling_factor = (rect.width) / 100;
-      const scaling_factor = Math.max(Math.min(rect.width, 200), 9 / 11 * rect.width) / 150;
+      // Apply a minimum to make sure the items don't shrink beyond recognition
+      const minimum_ratio = 1 / 100;
+      const maximum_ratio = 1 / 150;
+      const scaling_factor = Math.max(Math.min(rect.width, 100) * minimum_ratio, maximum_ratio * rect.width);
       set_attributes(svg, { ...calc_rect(this.dimensions), viewBox: `0 0 ${scaling_factor * 100} ${scaling_factor * sqrt_ratio * 100}` });
     };
 
