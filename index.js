@@ -40,7 +40,7 @@ class SvgBox {
     rect.style = "pointer-events: none;"
     const text = create("text", { "alignment-baseline": "hanging", x: "50%", y: "2pt", "text-anchor": "middle", "font-size": "50%" });
     const id_text = create("tspan", { x: "50%", dy: ".6em" });
-    this.info_text = create("tspan", { x: "50%", dy: "1.2em", "font-size": "60%" })
+    this.info_text = create("tspan", { x: "50%", dy: "1.2em", "font-size": "50%" })
     id_text.textContent = id;
     text.appendChild(id_text);
     text.appendChild(this.info_text);
